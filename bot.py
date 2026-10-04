@@ -5,19 +5,16 @@ from zoneinfo import ZoneInfo
 
 ET_TZ = ZoneInfo("America/New_York")
 CAL_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-RED_THRESHOLD = 4
+RED_THRESHOLD = 6
 MAX_SENDS = 10
-WARN_MIN, WARN_MAX = 1, 16  # minutes before event (~10 target)
+WARN_MIN, WARN_MAX = 1, 16
 
 MEGA = {"NVDA","AAPL","MSFT","AMZN","META","GOOGL","GOOG","TSLA","AVGO","NFLX","COST","AMD","ASML"}
 MED_OK = r"jobless|retail sales|ism|pmi|ppi|jolts|adp|speaks|testifies|minutes|sentiment|durable"
-NOTES = [
-    (r"cpi|ppi|pce", "Hot = yields up, NAS100 usually sells. Cool = rally risk."),
-    (r"non-farm|nonfarm|employment change|unemployment", "Strong jobs = yields up (NAS pressure). Weak = rate-cut hopes, but recession fear."),
-    (r"fomc|federal funds|rate", "Watch the statement and presser. Biggest volatility of the month."),
-    (r"speaks|testifies|minutes", "Tone shift can move NAS fast. Wait for the first spike."),
-    (r"jobless|retail|ism|pmi|jolts|adp", "Secondary data. Big miss or beat moves yields."),
-]
+BLOCK = r"south africa|\bindia\b|indian|bitcoin|crypto|ethereum|\bbtc\b|nigeria|pakistan|kenya"
+
+BULL = r"rate cuts?|cuts? rates|cooler|cools|eases|beats|rally|record high|ceasefire|truce|stimulus|upgrade|tariff (pause|delay|relief)"
+BEAR = r"rate hike|hikes? rates|hotter|accelerat|tariff|sanction|export controls?|chip ban|plunge|crash|tumble|sell-?off|recession|downgrade|misses|\bwar\b|missile|attack|shutdown|bank (failure|run)|yields? (jump|surge|rise|spike)"
 
 def gnews(q):
     return "https://news.google.com/rss/search?q=" + urllib.parse.quote(q + " when:1h") + "&hl=en-US&gl=US&ceid=US:en"
@@ -50,6 +47,10 @@ KEYWORDS = {
     r"downgrade|upgrade": 1, r"\bwar\b|missile|attack|strike on": 2, r"\btrump\b": 1,
 }
 
+NOTES = [
+    (r"cpi|ppi|pce", "Hot = yields up, NAS100 usually sells. Cool = rally risk."),
+]
+
 def fetch(url):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 market-bot"})
     return urllib.request.urlopen(req, timeout=20).read()
@@ -76,13 +77,23 @@ def parse(xml):
 
 def score(title):
     t = title.lower()
+    if re.search(BLOCK, t): return 0
     return sum(w for k, w in KEYWORDS.items() if re.search(k, t))
 
+def lean(title):
+    t = title.lower()
+    b, r = len(re.findall(BULL, t)), len(re.findall(BEAR, t))
+    if b > r: return "BUY (keyword guess)"
+    if r > b: return "SELL (keyword guess)"
+    return "WAIT (unclear)"
+
 def send(hook, title, link, s, red):
-    emb = {"title": ("🔴 " if red else "📰 ") + title[:240], "url": link,
-           "color": 0xE74C3C if red else 0x3498DB, "footer": {"text": f"impact score {s}"}}
+    emb = {"title": title[:240], "url": link, "color": 0x2B2D31,
+           "fields": [{"name": "NAS100", "value": lean(title), "inline": True},
+                      {"name": "Timing", "value": "OUT NOW (caught within ~5 min)", "inline": True}],
+           "footer": {"text": f"impact score {s} | not financial advice"}}
     body = {"embeds": [emb]}
-    if red: body["content"] = "🚨 **MARKET ALERT: USD / NAS100**"
+    if red: body["content"] = "**MARKET ALERT: USD / NAS100**"
     post(hook, body)
 
 def get_calendar():
@@ -94,15 +105,17 @@ def get_calendar():
             cache = {"t": time.time(), "data": json.loads(fetch(CAL_URL))}
         except Exception as e:
             print("calendar fetch failed, using cache", e)
-            cache["t"] = time.time() - 2.5 * 3600  # retry in ~30 min
+            cache["t"] = time.time() - 2.5 * 3600
         json.dump(cache, open("calendar.json", "w"))
     return cache.get("data", [])
 
-def note_for(title):
+def plan_for(title):
     t = title.lower()
-    for k, v in NOTES:
-        if re.search(k, t): return v
-    return "Expect volatility around the release."
+    if re.search(r"cpi|ppi|pce|non-farm|nonfarm|employment change|adp|jolts|retail sales", t):
+        return "Higher than forecast = SELL. Lower than forecast = BUY."
+    if re.search(r"jobless|unemployment", t):
+        return "Higher than forecast = BUY. Lower = SELL."
+    return "WAIT. Direction unknown until the release."
 
 def calendar_alerts(seen, hook):
     if not hook: return
@@ -118,13 +131,12 @@ def calendar_alerts(seen, hook):
         if WARN_MIN <= mins <= WARN_MAX and key not in seen:
             seen[key] = 1
             ts = int(dt.timestamp())
-            fields = [{"name": k.title(), "value": e[k], "inline": True}
-                      for k in ("forecast", "previous") if e.get(k)]
-            fields.append({"name": "NAS100", "value": note_for(title), "inline": False})
-            emb = {"title": ("🔴 " if imp == "High" else "🟠 ") + title,
-                   "description": f"Releases <t:{ts}:R> (<t:{ts}:t>)",
-                   "color": 0xE74C3C if imp == "High" else 0xE67E22, "fields": fields}
-            post(hook, {"content": f"🚨 **~{round(mins)} min to go ({imp} impact USD)**", "embeds": [emb]})
+            fields = [{"name": "NEWS OUT IN", "value": f"~{round(mins)} min (<t:{ts}:R>)", "inline": False}]
+            fields += [{"name": k.title(), "value": e[k], "inline": True}
+                       for k in ("forecast", "previous") if e.get(k)]
+            fields.append({"name": "NAS100 PLAN", "value": plan_for(title), "inline": False})
+            emb = {"title": title + f" ({imp} impact)", "color": 0x2B2D31, "fields": fields}
+            post(hook, {"content": f"**NEWS IN ~{round(mins)} MIN: {title}**", "embeds": [emb]})
 
 def extras(seen, hook):
     if not hook: return
@@ -135,7 +147,7 @@ def extras(seen, hook):
     key = "open:" + now.strftime("%Y-%m-%d")
     if WARN_MIN <= m <= WARN_MAX and key not in seen:
         seen[key] = 1
-        post(hook, {"content": f"🔔 **US cash open in ~{round(m)} min**, NAS100 volatility window"})
+        post(hook, {"content": f"**US CASH OPEN IN ~{round(m)} MIN.** NAS100 volatility window"})
     fk = os.environ.get("FINNHUB_KEY", "")
     key = "earn:" + now.strftime("%Y-%m-%d")
     if fk and now.hour >= 8 and key not in seen:
@@ -147,7 +159,7 @@ def extras(seen, hook):
             if rows:
                 when = {"bmo": "before open", "amc": "after close", "dmh": "during market"}
                 txt = "\n".join(f"**{x['symbol']}**: {when.get(x.get('hour'), 'today')}, EPS est {x.get('epsEstimate')}" for x in rows)
-                post(hook, {"content": "📊 **Nasdaq heavyweights reporting today**\n" + txt})
+                post(hook, {"content": "**Nasdaq heavyweights reporting today**\n" + txt})
         except Exception as ex: print("earnings failed", ex)
 
 def main():
