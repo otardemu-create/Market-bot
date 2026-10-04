@@ -1,0 +1,26 @@
+name: market-alerts
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency: market-alerts
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python bot.py
+        env:
+          DISCORD_RED: ${{ secrets.DISCORD_RED }}
+          DISCORD_NEWS: ${{ secrets.DISCORD_NEWS }}
+          FINNHUB_KEY: ${{ secrets.FINNHUB_KEY }}
+      - run: |
+          git config user.name "bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || (git commit -m "state" && git push)
