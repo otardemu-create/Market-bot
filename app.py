@@ -215,9 +215,10 @@ def tv_trend_report():
 
 class TradingViewHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        if self.path != "/tradingview":
+        if not self.path.startswith("/tradingview/"):
             self.send_response(404); self.end_headers(); return
-        if TRADINGVIEW_WEBHOOK_SECRET and self.headers.get("X-TradingView-Secret","") != TRADINGVIEW_WEBHOOK_SECRET:
+        path_secret=self.path.split("/tradingview/",1)[1].split("?",1)[0]
+        if TRADINGVIEW_WEBHOOK_SECRET and path_secret != TRADINGVIEW_WEBHOOK_SECRET:
             self.send_response(401); self.end_headers(); return
         try:
             length=int(self.headers.get("Content-Length","0"))
