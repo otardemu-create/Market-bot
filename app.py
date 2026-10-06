@@ -102,26 +102,36 @@ def normalize_event(raw,source):
     if currency!="USD" or impact not in {"high","red","3"} or not title or not dt: return None
     return Event(fingerprint("calendar",title,currency,dt.isoformat()),title,dt,currency,impact,clean(raw.get("estimate") or raw.get("forecast")),clean(raw.get("prev") or raw.get("previous")),clean(raw.get("actual")),source)
 
-def finnhub_calendar():
+FINANCE_CALENDAR_URL = "https://www.financecalendar.com/wp-json/fc/v1/calendar"
+
+def finance_calendar():
     today=utcnow().date(); end=(utcnow()+timedelta(hours=CALENDAR_LOOKAHEAD_HOURS)).date()
-    try:
-        data=api_get("/calendar/economic",{"from":today.isoformat(),"to":end.isoformat()})
-    except requests.HTTPError as exc:
-        LOG.warning("Finnhub economic calendar unavailable (%s); using Forex Factory calendar",exc)
-        return []
-    rows=data.get("economicCalendar",data if isinstance(data,list) else [])
-    return [e for row in rows if (e:=normalize_event(row,"Finnhub"))]
+    params={"from":today.isoformat(),"to":end.isoformat(),"impact":"high","limit":500}
+    r=requests.get(FINANCE_CALENDAR_URL,params=params,timeout=20)
+    r.raise_for_status()
+    data=r.json()
+    rows=data.get("events",data if isinstance(data,list) else [])
+    events=[]
+    for row in rows:
+        if not isinstance(row,dict): continue
+        currency=clean(row.get("currency") or row.get("country")).upper()
+        if currency not in {"USD","US"}: continue
+        dt=parse_time(row.get("time_utc") or row.get("scheduled_at") or row.get("datetime") or row.get("date"))
+        title=clean(row.get("title") or row.get("name") or row.get("event") or row.get("eventName"))
+        if not dt or not title: continue
+        events.append(Event(
+            fingerprint("calendar",title,currency,dt.isoformat()),
+            title,dt,"USD","high",
+            clean(row.get("consensus") or row.get("forecast") or row.get("estimate")),
+            clean(row.get("prior") or row.get("previous") or row.get("prev")),
+            clean(row.get("actual")),
+            "FinanceCalendar"
+        ))
+    return events
 
-def forex_factory_calendar():
-    try:
-        r=requests.get(FOREX_FACTORY_URL,timeout=20,headers={"User-Agent":"market-alert-bot/1.0"}); r.raise_for_status(); rows=r.json()
-    except Exception as exc:
-        LOG.warning("Forex Factory cross-check failed: %s",exc); return []
-    return [e for row in rows if (e:=normalize_event(row,"Forex Factory"))] if isinstance(rows,list) else []
-
-def merge_events(primary,crosscheck):
+def merge_events(primary,crosscheck=None):
     merged={}
-    for event in primary+crosscheck:
+    for event in primary+(crosscheck or []):
         key=fingerprint(event.title,event.currency,event.time.replace(second=0,microsecond=0))
         old=merged.get(key)
         if not old: merged[key]=event; continue
