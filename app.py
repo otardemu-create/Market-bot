@@ -153,6 +153,38 @@ def finnhub_news():
             out.append(News(fingerprint("news",title,row.get("url")),title,clean(row.get("url")),clean(row.get("source")) or "Finnhub",ts,symbol))
     return sorted({n.uid:n for n in out}.values(),key=lambda n:n.timestamp)
 
+def classify_trend(closes):
+    if len(closes) < 8: return "UNKNOWN", 0.0
+    n=min(len(closes),TREND_LOOKBACK_BARS); y=closes[-n:]
+    xbar=(n-1)/2; ybar=sum(y)/n; den=sum((i-xbar)**2 for i in range(n))
+    slope=sum((i-xbar)*(v-ybar) for i,v in enumerate(y))/den if den else 0
+    move=(slope*(n-1)/y[0])*100 if y[0] else 0
+    return ("UP" if move>0.15 else "DOWN" if move<-0.15 else "FLAT"),move
+
+def trend_report():
+    end=int(time.time()); rows=[]
+    for label,mins in [("1H",60),("2H",120),("3H",180),("4H",240)]:
+        start=end-mins*60
+        data=api_get("/stock/candle",{"symbol":TREND_SYMBOL,"resolution":"60","from":start,"to":end})
+        closes=data.get("c",[]) if isinstance(data,dict) and data.get("s")=="ok" else []
+        trend,move=classify_trend(closes); rows.append((label,trend,move))
+    daily_data=api_get("/stock/candle",{"symbol":TREND_SYMBOL,"resolution":"D","from":end-86400*30,"to":end})
+    daily=daily_data.get("c",[]) if isinstance(daily_data,dict) and daily_data.get("s")=="ok" else []
+    dtrend,dmove=classify_trend(daily)
+    dirs=[x[1] for x in rows if x[1] in ("UP","DOWN")]+([dtrend] if dtrend in ("UP","DOWN") else [])
+    overall="UP" if dirs.count("UP")>dirs.count("DOWN") else "DOWN" if dirs.count("DOWN")>dirs.count("UP") else "MIXED"
+    icon={"UP":"🟢","DOWN":"🔴","FLAT":"🟡","UNKNOWN":"⚪"}
+    lines=[f"📊 {TREND_SYMBOL} MARKET TREND",f"Overall: {icon.get(overall,'⚪')} {overall}",f"Daily: {icon[dtrend]} {dtrend}"]
+    for label,tr,move in rows: lines.append(f"{label}: {icon[tr]} {tr} ({move:+.2f}%)" if tr!="UNKNOWN" else f"{label}: ⚪ UNKNOWN")
+    return "\n".join(lines)
+
+def process_trend():
+    now=time.time()
+    last=STATE.get("trend_report_at",0)
+    if now-last < TREND_REPORT_MINUTES*60: return
+    send_once("trend",str(int(now//(TREND_REPORT_MINUTES*60))),trend_report())
+    STATE["trend_report_at"]=now; save_state(STATE)
+
 def process_news():
     for item in finnhub_news():
         if item.uid in STATE["news"]: continue
@@ -172,7 +204,7 @@ def run():
             for event in events:
                 if now-timedelta(minutes=1) <= event.time <= now+timedelta(hours=CALENDAR_LOOKAHEAD_HOURS):
                     pre_alert(event,now); release_alert(event)
-            process_news()
+            process_news()\n            process_trend()
         except Exception: LOG.exception("Polling cycle failed; retrying next cycle")
         time.sleep(max(5,POLL_SECONDS-(time.monotonic()-started)))
 
