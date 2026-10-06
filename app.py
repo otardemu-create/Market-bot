@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-import requests
+import requests\nfrom http.server import BaseHTTPRequestHandler, HTTPServer\nfrom threading import Thread
 
 LOG = logging.getLogger("market-alerts")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s | %(levelname)s | %(message)s")
