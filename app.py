@@ -129,26 +129,21 @@ def pre_alert(event,now):
     if event.actual: return
     delta=(event.time-now).total_seconds()
     if PRE_ALERT_MINUTES*60-45 <= delta <= PRE_ALERT_MINUTES*60+45:
-        text=f"⏰ USD HIGH-IMPACT EVENT IN {PRE_ALERT_MINUTES} MIN
-
-{event.title}
-Time: {event.time.strftime('%H:%M UTC')}
-Forecast: {event.forecast or 'n/a'}
-Previous: {event.previous or 'n/a'}
-Source: {event.source}"
+        text=(f"USD HIGH-IMPACT EVENT IN {PRE_ALERT_MINUTES} MIN\\n\\n"
+              f"{event.title}\\nTime: {event.time.strftime('%H:%M UTC')}\\n"
+              f"Forecast: {event.forecast or 'n/a'}\\nPrevious: {event.previous or 'n/a'}\\n"
+              f"Source: {event.source}")
         if send_once("pre_alerted",event_key(event,"pre"),text): LOG.info("Pre-alert sent: %s",event.title)
+
 
 def release_alert(event):
     if not event.actual: return
     uid=event_key(event,"release")+":"+fingerprint(event.actual)
-    text=f"🚨 USD HIGH-IMPACT RELEASE
-
-{event.title}
-Actual: {event.actual}
-Forecast: {event.forecast or 'n/a'}
-Previous: {event.previous or 'n/a'}
-Source: {event.source}"
+    text=(f"USD HIGH-IMPACT RELEASE\\n\\n{event.title}\\nActual: {event.actual}\\n"
+          f"Forecast: {event.forecast or 'n/a'}\\nPrevious: {event.previous or 'n/a'}\\n"
+          f"Source: {event.source}")
     if send_once("released",uid,text): LOG.info("Release alert sent: %s = %s",event.title,event.actual)
+
 
 def headline_matches(headline,symbol=""):
     hay=f"{headline} {symbol}".lower()
@@ -199,7 +194,8 @@ def tv_trend_report():
     now=time.time()
     fresh=[b for b in TV_BARS if b["ts"]>=now-86400]
     if not fresh:
-        return "📊 NAS100.pro MARKET TREND\\nStatus: WAITING FOR TRADINGVIEW DATA"
+        return "📊 NAS100.pro MARKET TREND\
+Status: WAITING FOR TRADINGVIEW DATA"
     closes=[b["close"] for b in fresh]
     rows=[]
     for label,seconds in [("1H",3600),("2H",7200),("3H",10800),("4H",14400)]:
@@ -211,7 +207,8 @@ def tv_trend_report():
     overall="UP" if dirs.count("UP")>dirs.count("DOWN") else "DOWN" if dirs.count("DOWN")>dirs.count("UP") else "MIXED"
     age=max(0,int(now-fresh[-1]["ts"]))
     lines=[f"📊 NAS100.pro MARKET TREND",f"Overall: {overall}",f"Daily: {dtrend}",f"1H: {rows[0][1]}",f"2H: {rows[1][1]}",f"3H: {rows[2][1]}",f"4H: {rows[3][1]}",f"TradingView data age: {age}s"]
-    return "\\n".join(lines)
+    return "\
+".join(lines)
 
 class TradingViewHandler(BaseHTTPRequestHandler):
     def do_POST(self):
