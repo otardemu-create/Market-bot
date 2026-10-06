@@ -1,50 +1,92 @@
-# USD + NAS100 Market Alert Bot
+# NAS100.pro Market Alert Bot
 
-Always-on Python service for Discord alerts around high-impact USD macro events and market-moving NAS100 headlines.
+Always-on Python service for Discord alerts around high-impact USD macro events, market-moving NAS100 news, and TradingView NAS100.pro trend updates.
 
-## Alerts
+## What it sends
 
-- 10 minutes before a high-impact USD event.
-- When an actual value appears for that event.
-- Market-moving headlines involving the Fed, US macro data, yields, tariffs/politics, Nasdaq/NAS100, AI/chips, and NAS100 heavyweight tickers.
+### NAS100.pro trend
+TradingView is the price/trend source. The bot does not substitute QQQ or another proxy for NAS100.pro.
 
-## Sources
+Discord trend messages include:
+- Overall direction: UP, DOWN, MIXED, or STALE
+- 1H trend
+- 2H trend
+- 3H trend
+- 4H trend
+- Daily trend
+- TradingView data age
 
-- Finnhub economic calendar: primary calendar.
-- Forex Factory weekly JSON: cross-check.
-- Finnhub general/company news: headline source.
+The TradingView alert should be created on the exact NAS100.pro chart and should send OHLC JSON on each 1-minute bar close. The bot aggregates those bars into the higher-timeframe trend view.
 
-The bot intentionally does not make MyFXBook scraping a production dependency. Its HTML can change or block automated clients. A licensed/API source can be added as another cross-check provider.
+TradingView supports alert placeholders such as `{{open}}`, `{{high}}`, `{{low}}`, `{{close}}`, and `{{time}}`.
 
-Finnhub requires an API key and its economic-data product is paid. Check the current plan before production use.
+Example alert message:
 
-## Setup
+    {"symbol":"{{ticker}}","timestamp":"{{time}}","open":"{{open}}","high":"{{high}}","low":"{{low}}","close":"{{close}}"}
 
-1. Create a Discord bot with BotFather.
-2. Add the bot to the target chat/channel and get the chat ID.
-3. Create a Finnhub API key.
-4. Copy .env.example to .env and set the real values.
-5. Run with Docker Compose:
+Use the bot's Render HTTPS webhook endpoint with its private TradingView webhook secret. Never commit the secret to Git.
 
-    docker compose up -d --build
+### Economic calendar
+- 10 minutes before a high-impact USD event
+- At release when an actual value is available
+- Finnhub is the primary calendar source
+- Forex Factory weekly JSON is used as a cross-check
+- USD + high/red impact events only
 
-Or directly:
+### Market-moving news
+Finnhub general and company news are filtered for factors likely to move NAS100.pro, including:
+- Fed/FOMC/Powell
+- rates and Treasury yields
+- CPI/PPI/PCE
+- NFP, unemployment and jobless claims
+- GDP, retail sales, ISM/PMI
+- tariffs and sanctions
+- Nasdaq/NAS100
+- semiconductors, chips, AI and export controls
+- major NAS100 constituents
 
-    python -m venv .venv
-    source .venv/bin/activate
-    pip install -r requirements.txt
-    python app.py
+## Runtime
+
+- Python 3.12
+- Render web service
+- Continuous polling
+- HTTP webhook listener on Render's `PORT`
+- `GET /health` returns 200 when the process is serving
+- State stored in `data/state.json` for deduplication
+- Discord webhook is used for delivery
+
+## Required environment variables
+
+- `FINNHUB_API_KEY`
+- `DISCORD_WEBHOOK_URL`
+- `TRADINGVIEW_WEBHOOK_SECRET`
+
+Optional:
+- `POLL_SECONDS` default 30
+- `PRE_ALERT_MINUTES` default 10
+- `CALENDAR_LOOKAHEAD_HOURS` default 48
+- `NEWS_LOOKBACK_MINUTES` default 20
+- `TRADINGVIEW_STALE_SECONDS` default 180
+- `TREND_LOOKBACK_BARS` default 20
+- `STATE_FILE` default `data/state.json`
+- `LOG_LEVEL` default `INFO`
 
 ## Deployment
 
-Run this on an always-on VPS or cloud VM. Do not use GitHub Actions for the polling loop.
+The production target is an always-on Render web service. GitHub Actions is intentionally not used for the polling loop.
 
-The state file is persisted under data/state.json. Alert fingerprints prevent duplicate calendar and news messages across restarts.
+For Render, use:
+- Build: `pip install -r requirements.txt`
+- Start: `python app.py`
+- Bind: `0.0.0.0:$PORT`
+- Health check: `/health`
 
-## Discord
+## Security
 
-The service uses Discord's Bot API sendMessage endpoint.
+Secrets belong in Render environment variables, not GitHub files.
 
-## Latency
+Because API credentials and webhook credentials were exposed during setup, rotate the Finnhub API key and Discord webhook after the deployment has been verified.
 
-This is an alerting service, not an exchange-grade feed or trading execution system. Free feeds can lag. For the fastest release detection, use a licensed low-latency economic/news feed and keep this service as the notification layer.
+## Limitations
+
+This is an alerting and trend-monitoring service, not an exchange-grade market-data feed or trade execution engine. TradingView webhook delivery is the real-time NAS100.pro price input. Economic/news feeds can still have source-side latency.
