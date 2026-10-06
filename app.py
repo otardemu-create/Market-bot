@@ -309,7 +309,7 @@ def run():
     while True:
         started=time.monotonic(); now=utcnow()
         try:
-            events=merge_events(finnhub_calendar(),forex_factory_calendar())
+            events=finance_calendar()
             for event in events:
                 if now-timedelta(minutes=1) <= event.time <= now+timedelta(hours=CALENDAR_LOOKAHEAD_HOURS):
                     pre_alert(event,now); release_alert(event)
