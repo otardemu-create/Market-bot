@@ -24,20 +24,42 @@ TREND_LOOKBACK_BARS = max(8, int(os.getenv("TREND_LOOKBACK_BARS", "20")))
 STATE_FILE = Path(os.getenv("STATE_FILE", "data/state.json"))
 FINANCE_CALENDAR_URL = "https://www.financecalendar.com/wp-json/fc/v1/calendar"
 FINNHUB_BASE = "https://finnhub.io/api/v1"
-NEWS_RSS_QUERY = '"Nasdaq" OR "Nasdaq 100" OR "S&P 500" OR "Federal Reserve" OR FOMC OR Powell OR CPI OR inflation OR "nonfarm payrolls" OR Nvidia OR Apple OR Microsoft OR Amazon OR Meta OR Google OR Tesla OR Broadcom OR AMD when:2h'
+NEWS_RSS_QUERY = '("Federal Reserve" OR FOMC OR Powell OR "rate cut" OR "rate hike" OR CPI OR PPI OR "nonfarm payroll" OR unemployment OR GDP OR PCE OR "retail sales" OR tariffs OR sanctions OR "export controls" OR "debt ceiling" OR Nvidia OR Apple OR Microsoft OR Amazon OR Meta OR Google OR Tesla OR Broadcom OR AMD) when:2h'
 NEWS_RSS_URL = "https://news.google.com/rss/search?q=" + urllib.parse.quote_plus(NEWS_RSS_QUERY) + "&hl=en-US&gl=US&ceid=US:en"
 TRADINGVIEW_WEBHOOK_SECRET = os.getenv("TRADINGVIEW_WEBHOOK_SECRET", "").strip()
 TRADINGVIEW_STALE_SECONDS = max(120, int(os.getenv("TRADINGVIEW_STALE_SECONDS", "180")))
 
 NAS100_TICKERS = {"NVDA","AAPL","MSFT","AMZN","META","GOOGL","GOOG","TSLA","AVGO","NFLX","COST","AMD","ADBE","PEP","CSCO","INTC"}
-KEYWORDS = {
-    "fed","federal reserve","fomc","powell","interest rate","rate decision","rate cut","rate hike",
-    "cpi","inflation","ppi","nfp","nonfarm payroll","non-farm payroll","jobs report","unemployment",
-    "gdp","pce","retail sales","ism","pmi","jobless claims","treasury","yield","yields","10-year",
-    "tariff","tariffs","sanction","sanctions","nasdaq","nas100","dow","s&p","sp500","stock market",
-    "wall street","equities","stocks","market","semiconductor","chip","export controls","ai",
-    "earnings","guidance","revenue","profit","acquisition","merger","ipo","sec","lawsuit","antitrust",
-    "microsoft","apple","nvidia","amazon","meta","google","alphabet","tesla","broadcom","amd"
+# Broad company/universe terms are intentionally NOT enough to trigger an alert.
+# A headline must contain a concrete catalyst or a major market-wide move.
+MACRO_IMPACT_TERMS = {
+    "fomc", "federal reserve", "fed decision", "fed rate", "rate cut", "rate hike",
+    "interest rate decision", "cpi", "consumer price index", "ppi", "producer price",
+    "nonfarm payroll", "non-farm payroll", "jobs report", "unemployment rate",
+    "initial jobless claims", "gdp", "gross domestic product", "pce",
+    "retail sales", "ism manufacturing", "ism services", "tariff", "tariffs",
+    "sanctions", "export controls", "debt ceiling", "government shutdown"
+}
+COMPANY_IMPACT_TERMS = {
+    "earnings", "quarterly results", "guidance", "outlook", "profit warning",
+    "revenue warning", "acquisition", "merger", "takeover", "buyout",
+    "bankruptcy", "chapter 11", "sec investigation", "sec charges",
+    "antitrust", "lawsuit", "investigation", "recall", "accounting fraud",
+    "layoffs", "job cuts", "ceo resigns", "ceo steps down", "ipo",
+    "downgrade", "upgrade", "price target"
+}
+MARKET_MOVE_TERMS = {
+    "stock market crashes", "market crashes", "market plunge", "market plunges",
+    "stocks plunge", "stocks plummet", "stocks surge", "stocks rally",
+    "nasdaq plunges", "nasdaq surges", "nasdaq selloff", "nasdaq rally",
+    "s&p 500 plunges", "s&p 500 surges", "s&p 500 selloff",
+    "futures plunge", "futures surge", "global selloff", "risk-off", "risk on"
+}
+NASDAQ_COMPANIES = {
+    "nvidia": "NVDA", "apple": "AAPL", "microsoft": "MSFT", "amazon": "AMZN",
+    "meta": "META", "google": "GOOGL", "alphabet": "GOOGL", "tesla": "TSLA",
+    "broadcom": "AVGO", "amd": "AMD", "netflix": "NFLX", "costco": "COST",
+    "adobe": "ADBE", "pepsico": "PEP", "cisco": "CSCO", "intel": "INTC"
 }
 
 @dataclass(frozen=True)
@@ -155,8 +177,19 @@ def release_alert(event):
     if send_once("released",uid,text): LOG.info("Release alert sent: %s = %s",event.title,event.actual)
 
 def headline_matches(headline,symbol=""):
-    hay=f"{headline} {symbol}".lower()
-    return bool(symbol.upper() in NAS100_TICKERS or any(k in hay for k in KEYWORDS))
+    """Strict high-impact gate. Generic market chatter must not alert."""
+    hay = clean(f"{headline} {symbol}").lower()
+
+    if any(term in hay for term in MACRO_IMPACT_TERMS):
+        return True
+
+    if any(term in hay for term in MARKET_MOVE_TERMS):
+        return True
+
+    company_hit = any(name in hay for name in NASDAQ_COMPANIES)
+    catalyst_hit = any(term in hay for term in COMPANY_IMPACT_TERMS)
+    ticker_hit = symbol.upper() in NAS100_TICKERS if symbol else False
+    return (company_hit or ticker_hit) and catalyst_hit
 
 def rss_news():
     now=utcnow(); cutoff=now-timedelta(minutes=NEWS_LOOKBACK_MINUTES); out=[]
