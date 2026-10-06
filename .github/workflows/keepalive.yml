@@ -1,0 +1,13 @@
+name: Keep market alert bot awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake Render service
+        run: curl --fail --silent --show-error --max-time 30 https://market-alerts-zs0z.onrender.com/health
