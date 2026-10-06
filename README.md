@@ -45,6 +45,10 @@ Finnhub general and company news are filtered for factors likely to move NAS100.
 - semiconductors, chips, AI and export controls
 - major NAS100 constituents
 
+## Deployment verification
+
+Latest source changes are intended to trigger Render auto-deploy from `main`.
+
 ## Runtime
 
 - Python 3.12
