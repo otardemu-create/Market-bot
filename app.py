@@ -281,12 +281,7 @@ def run_http():
 def process_news():
     for item in finnhub_news():
         if item.uid in STATE["news"]: continue
-        text=f"📰 MARKET-MOVING HEADLINE
-
-{item.headline}
-"+(f"Ticker: {item.symbol}
-" if item.symbol else "")+f"Source: {item.source}
-{item.url}"
+        text=(f"📰 MARKET-MOVING HEADLINE\n\n{item.headline}\n"\n              + (f"Ticker: {item.symbol}\n" if item.symbol else "")\n              + f"Source: {item.source}\n{item.url}")
         send_once("news",item.uid,text)
 
 def validate():
