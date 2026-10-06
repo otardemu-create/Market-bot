@@ -319,12 +319,11 @@ def process_news():
     for item in items:
         if item.uid in STATE["news"]: continue
         nas_bias, usd_bias, reason = news_market_view(item.headline)
-        text=(f"MARKET-MOVING NEWS\n\n"
-              f"{item.headline}\n\n"
-              f"{nas_bias}\n{usd_bias}\n"
-              f"WHY: {reason}\n\n"
-              + (f"Ticker: {item.symbol}\n" if item.symbol else "")
-              + f"Source: {item.source}\n{item.url}")
+        text=(f"NEWS\n\n"
+              f"{item.headline}\n"
+              f"NAS100: {nas_bias.replace('NAS100: ','')} | USD: {usd_bias.replace('USD: ','')}\n"
+              f"{reason}\n"
+              + f"{item.url}")
         if send_once("news",item.uid,text): sent+=1
     LOG.info("News poll complete: %s candidate(s), %s sent",len(items),sent)
 
