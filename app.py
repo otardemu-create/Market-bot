@@ -15,7 +15,7 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 POLL_SECONDS = max(30, int(os.getenv("POLL_SECONDS", "60")))
 CALENDAR_LOOKAHEAD_HOURS = max(6, int(os.getenv("CALENDAR_LOOKAHEAD_HOURS", "48")))
 PRE_ALERT_MINUTES = int(os.getenv("PRE_ALERT_MINUTES", "10"))
-NEWS_LOOKBACK_MINUTES = max(5, int(os.getenv("NEWS_LOOKBACK_MINUTES", "20")))
+NEWS_LOOKBACK_MINUTES = max(30, int(os.getenv("NEWS_LOOKBACK_MINUTES", "180")))
 NEWS_POLL_SECONDS = max(60, int(os.getenv("NEWS_POLL_SECONDS", "180")))
 TREND_LOOKBACK_BARS = max(8, int(os.getenv("TREND_LOOKBACK_BARS", "20")))
 STATE_FILE = Path(os.getenv("STATE_FILE", "data/state.json"))
@@ -25,7 +25,15 @@ TRADINGVIEW_WEBHOOK_SECRET = os.getenv("TRADINGVIEW_WEBHOOK_SECRET", "").strip()
 TRADINGVIEW_STALE_SECONDS = max(120, int(os.getenv("TRADINGVIEW_STALE_SECONDS", "180")))
 
 NAS100_TICKERS = {"NVDA","AAPL","MSFT","AMZN","META","GOOGL","GOOG","TSLA","AVGO","NFLX","COST","AMD","ADBE","PEP","CSCO","INTC"}
-KEYWORDS = {"fed","federal reserve","fomc","powell","interest rate","rate decision","rate cut","rate hike","cpi","inflation","ppi","nfp","nonfarm payroll","non-farm payroll","jobs report","unemployment","gdp","pce","retail sales","ism","pmi","jobless claims","treasury","yield","yields","10-year","tariff","tariffs","sanction","sanctions","nasdaq","nas100","semiconductor","chip restriction","export controls","ai"}
+KEYWORDS = {
+    "fed","federal reserve","fomc","powell","interest rate","rate decision","rate cut","rate hike",
+    "cpi","inflation","ppi","nfp","nonfarm payroll","non-farm payroll","jobs report","unemployment",
+    "gdp","pce","retail sales","ism","pmi","jobless claims","treasury","yield","yields","10-year",
+    "tariff","tariffs","sanction","sanctions","nasdaq","nas100","dow","s&p","sp500","stock market",
+    "wall street","equities","stocks","market","semiconductor","chip","export controls","ai",
+    "earnings","guidance","revenue","profit","acquisition","merger","ipo","sec","lawsuit","antitrust",
+    "microsoft","apple","nvidia","amazon","meta","google","alphabet","tesla","broadcom","amd"
+}
 
 @dataclass(frozen=True)
 class Event:
@@ -86,10 +94,8 @@ def api_get(path, params):
     if not FINNHUB_KEY: raise RuntimeError("FINNHUB_API_KEY is missing")
     params=dict(params); params["token"]=FINNHUB_KEY
     r=requests.get(f"{FINNHUB_BASE}{path}",params=params,timeout=20)
-    if r.status_code == 429:
-        raise RuntimeError("Finnhub rate limit (429)")
-    if r.status_code in (401,403):
-        raise RuntimeError(f"Finnhub authorization/plan error ({r.status_code})")
+    if r.status_code == 429: raise RuntimeError("Finnhub rate limit (429)")
+    if r.status_code in (401,403): raise RuntimeError(f"Finnhub authorization/plan error ({r.status_code})")
     r.raise_for_status()
     return r.json()
 
@@ -110,10 +116,8 @@ def send_once(bucket,uid,text):
 def finance_calendar():
     today=utcnow().date(); end=(utcnow()+timedelta(hours=CALENDAR_LOOKAHEAD_HOURS)).date()
     params={"from":today.isoformat(),"to":end.isoformat(),"impact":"high","limit":500}
-    r=requests.get(FINANCE_CALENDAR_URL,params=params,timeout=20)
-    r.raise_for_status()
-    data=r.json()
-    rows=data.get("events",data if isinstance(data,list) else [])
+    r=requests.get(FINANCE_CALENDAR_URL,params=params,timeout=20); r.raise_for_status()
+    data=r.json(); rows=data.get("events",data if isinstance(data,list) else [])
     events=[]
     for row in rows:
         if not isinstance(row,dict): continue
@@ -147,34 +151,40 @@ def release_alert(event):
 
 def headline_matches(headline,symbol=""):
     hay=f"{headline} {symbol}".lower()
-    return symbol.upper() in NAS100_TICKERS or any(k in hay for k in KEYWORDS)
+    return bool(symbol.upper() in NAS100_TICKERS or any(k in hay for k in KEYWORDS))
 
 def finnhub_news():
-    now=utcnow()
-    cutoff=now-timedelta(minutes=NEWS_LOOKBACK_MINUTES)
-    out=[]
+    now=utcnow(); cutoff=now-timedelta(minutes=NEWS_LOOKBACK_MINUTES); out=[]
     general=api_get("/news",{"category":"general"})
+    general_count=0; matched_count=0
     for row in general if isinstance(general,list) else []:
         title=clean(row.get("headline")); ts=parse_time(row.get("datetime"))
-        if not title or not ts or ts < cutoff or not headline_matches(title,clean(row.get("related"))): continue
-        out.append(News(fingerprint("news",title,row.get("url")),title,clean(row.get("url")),clean(row.get("source")) or "Finnhub",ts,clean(row.get("related"))))
-    # One company-news request per poll, rotating through NAS100 names, keeps API usage sane.
+        if not title or not ts or ts < cutoff: continue
+        general_count += 1
+        related=clean(row.get("related"))
+        if headline_matches(title,related):
+            matched_count += 1
+            out.append(News(fingerprint("news",title,row.get("url")),title,clean(row.get("url")),clean(row.get("source")) or "Finnhub",ts,related))
+    LOG.info("Finnhub general news: %s recent, %s NAS100/macro matches",general_count,matched_count)
+
     cursor=int(STATE.get("news_cursor",0) or 0)
     symbol=sorted(NAS100_TICKERS)[cursor % len(NAS100_TICKERS)]
     STATE["news_cursor"]=(cursor+1) % len(NAS100_TICKERS)
     try:
         rows=api_get("/company-news",{"symbol":symbol,"from":cutoff.date().isoformat(),"to":now.date().isoformat()})
+        company_count=0
         for row in rows if isinstance(rows,list) else []:
             title=clean(row.get("headline")); ts=parse_time(row.get("datetime"))
             if title and ts and ts >= cutoff:
+                company_count += 1
                 out.append(News(fingerprint("news",title,row.get("url")),title,clean(row.get("url")),clean(row.get("source")) or "Finnhub",ts,symbol))
+        LOG.info("Finnhub company news: %s=%s recent",symbol,company_count)
     except Exception as exc:
         LOG.warning("Company news failed for %s: %s",symbol,exc)
     return sorted({n.uid:n for n in out}.values(),key=lambda n:n.timestamp)
 
 def process_news():
-    items=finnhub_news()
-    sent=0
+    items=finnhub_news(); sent=0
     for item in items:
         if item.uid in STATE["news"]: continue
         text=(f"MARKET-MOVING HEADLINE\n\n{item.headline}\n"
@@ -185,8 +195,8 @@ def process_news():
 
 def classify_trend(closes):
     if len(closes)<8: return "UNKNOWN",0.0
-    n=min(len(closes),TREND_LOOKBACK_BARS); y=closes[-n:]
-    xbar=(n-1)/2; ybar=sum(y)/n; den=sum((i-xbar)**2 for i in range(n))
+    n=min(len(closes),TREND_LOOKBACK_BARS); y=closes[-n:]; xbar=(n-1)/2; ybar=sum(y)/n
+    den=sum((i-xbar)**2 for i in range(n))
     slope=sum((i-xbar)*(v-ybar) for i,v in enumerate(y))/den if den else 0
     move=(slope*(n-1)/y[0])*100 if y[0] else 0
     return ("UP" if move>0.15 else "DOWN" if move<-0.15 else "FLAT"),move
@@ -196,20 +206,15 @@ TV_BARS=[]
 def add_tv_bar(payload):
     global TV_BARS
     bar={"ts":float(payload.get("timestamp") or payload.get("time") or time.time()),"open":float(payload["open"]),"high":float(payload["high"]),"low":float(payload["low"]),"close":float(payload["close"])}
-    TV_BARS.append(bar)
-    cutoff=bar["ts"]-86400*3
-    TV_BARS=[b for b in TV_BARS if b["ts"]>=cutoff][-5000:]
-    return bar
+    TV_BARS.append(bar); cutoff=bar["ts"]-86400*3; TV_BARS=[b for b in TV_BARS if b["ts"]>=cutoff][-5000:]; return bar
 
 def tv_trend_report():
     now=time.time(); fresh=[b for b in TV_BARS if b["ts"]>=now-86400]
     if not fresh: return "NAS100.pro MARKET TREND\nStatus: WAITING FOR TRADINGVIEW DATA"
     rows=[]
     for label,seconds in [("1H",3600),("2H",7200),("3H",10800),("4H",14400)]:
-        subset=[b["close"] for b in fresh if b["ts"]>=now-seconds]
-        tr,move=classify_trend(subset); rows.append((label,tr,move))
-    daily=[b["close"] for b in fresh if b["ts"]>=now-86400]
-    dtrend,dmove=classify_trend(daily)
+        subset=[b["close"] for b in fresh if b["ts"]>=now-seconds]; tr,move=classify_trend(subset); rows.append((label,tr,move))
+    daily=[b["close"] for b in fresh if b["ts"]>=now-86400]; dtrend,dmove=classify_trend(daily)
     dirs=[x[1] for x in rows+[("Daily",dtrend,dmove)] if x[1] in ("UP","DOWN")]
     overall="UP" if dirs.count("UP")>dirs.count("DOWN") else "DOWN" if dirs.count("DOWN")>dirs.count("UP") else "MIXED"
     age=max(0,int(now-fresh[-1]["ts"]))
@@ -243,41 +248,29 @@ class TradingViewHandler(BaseHTTPRequestHandler):
 def run_http():
     port=int(os.getenv("PORT","10000")); server=HTTPServer(("0.0.0.0",port),TradingViewHandler); Thread(target=server.serve_forever,daemon=True).start(); LOG.info("TradingView webhook listening on port %s",port)
 
-def process_news():
-    items=finnhub_news(); sent=0
-    for item in items:
-        if item.uid in STATE["news"]: continue
-        text=(f"MARKET-MOVING HEADLINE\n\n{item.headline}\n"+(f"Ticker: {item.symbol}\n" if item.symbol else "")+f"Source: {item.source}\n{item.url}")
-        if send_once("news",item.uid,text): sent+=1
-    LOG.info("News poll complete: %s candidate(s), %s sent",len(items),sent)
-
 def validate():
     missing=[name for name,value in {"FINNHUB_API_KEY":FINNHUB_KEY,"DISCORD_WEBHOOK_URL":DISCORD_WEBHOOK_URL,"TRADINGVIEW_WEBHOOK_SECRET":TRADINGVIEW_WEBHOOK_SECRET}.items() if not value]
     if missing: raise RuntimeError("Missing environment variables: "+", ".join(missing))
-    
+
 def run():
     validate(); run_http(); LOG.info("Market alert bot started. Poll=%ss NewsPoll=%ss",POLL_SECONDS,NEWS_POLL_SECONDS)
-    last_news=0.0
-    last_calendar=0.0
+    last_news=0.0; last_calendar=0.0
     while True:
         started=time.monotonic(); now=utcnow()
         try:
             if time.monotonic()-last_calendar >= POLL_SECONDS:
                 try:
-                    events=finance_calendar()
-                    LOG.info("Calendar poll complete: %s event(s)",len(events))
+                    events=finance_calendar(); LOG.info("Calendar poll complete: %s event(s)",len(events))
                     for event in events:
                         if now-timedelta(minutes=1)<=event.time<=now+timedelta(hours=CALENDAR_LOOKAHEAD_HOURS):
                             pre_alert(event,now); release_alert(event)
-                except Exception as exc:
-                    LOG.exception("Calendar poll failed: %s",exc)
+                except Exception as exc: LOG.exception("Calendar poll failed: %s",exc)
                 last_calendar=time.monotonic()
             if time.monotonic()-last_news >= NEWS_POLL_SECONDS:
                 try: process_news()
                 except Exception as exc: LOG.exception("News poll failed: %s",exc)
                 last_news=time.monotonic()
-        except Exception as exc:
-            LOG.exception("Main loop failed; retrying")
+        except Exception: LOG.exception("Main loop failed; retrying")
         time.sleep(max(5,POLL_SECONDS-(time.monotonic()-started)))
 
 if __name__=="__main__": run()
