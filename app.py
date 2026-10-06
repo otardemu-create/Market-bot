@@ -16,6 +16,7 @@ POLL_SECONDS = max(15, int(os.getenv("POLL_SECONDS", "30")))
 CALENDAR_LOOKAHEAD_HOURS = max(6, int(os.getenv("CALENDAR_LOOKAHEAD_HOURS", "48")))
 PRE_ALERT_MINUTES = int(os.getenv("PRE_ALERT_MINUTES", "10"))
 NEWS_LOOKBACK_MINUTES = max(5, int(os.getenv("NEWS_LOOKBACK_MINUTES", "20")))
+TREND_LOOKBACK_BARS = max(8, int(os.getenv("TREND_LOOKBACK_BARS", "20")))
 STATE_FILE = Path(os.getenv("STATE_FILE", "data/state.json"))
 FOREX_FACTORY_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 FINNHUB_BASE = "https://finnhub.io/api/v1"
@@ -205,6 +206,8 @@ def tv_trend_report():
     dirs=[x[1] for x in rows+[("Daily",dtrend,dmove)] if x[1] in ("UP","DOWN")]
     overall="UP" if dirs.count("UP")>dirs.count("DOWN") else "DOWN" if dirs.count("DOWN")>dirs.count("UP") else "MIXED"
     age=max(0,int(now-fresh[-1]["ts"]))
+    if age > TRADINGVIEW_STALE_SECONDS:
+        overall="STALE"
     lines=[
         "📊 NAS100.pro MARKET TREND",
         f"Overall: {overall}",
