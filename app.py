@@ -4,6 +4,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 import requests
+import urllib.parse
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread, Lock
 
@@ -21,6 +24,8 @@ TREND_LOOKBACK_BARS = max(8, int(os.getenv("TREND_LOOKBACK_BARS", "20")))
 STATE_FILE = Path(os.getenv("STATE_FILE", "data/state.json"))
 FINANCE_CALENDAR_URL = "https://www.financecalendar.com/wp-json/fc/v1/calendar"
 FINNHUB_BASE = "https://finnhub.io/api/v1"
+NEWS_RSS_QUERY = '"Nasdaq" OR "Nasdaq 100" OR "S&P 500" OR "Federal Reserve" OR FOMC OR Powell OR CPI OR inflation OR "nonfarm payrolls" OR Nvidia OR Apple OR Microsoft OR Amazon OR Meta OR Google OR Tesla OR Broadcom OR AMD when:2h'
+NEWS_RSS_URL = "https://news.google.com/rss/search?q=" + urllib.parse.quote_plus(NEWS_RSS_QUERY) + "&hl=en-US&gl=US&ceid=US:en"
 TRADINGVIEW_WEBHOOK_SECRET = os.getenv("TRADINGVIEW_WEBHOOK_SECRET", "").strip()
 TRADINGVIEW_STALE_SECONDS = max(120, int(os.getenv("TRADINGVIEW_STALE_SECONDS", "180")))
 
@@ -153,38 +158,57 @@ def headline_matches(headline,symbol=""):
     hay=f"{headline} {symbol}".lower()
     return bool(symbol.upper() in NAS100_TICKERS or any(k in hay for k in KEYWORDS))
 
-def finnhub_news():
+def rss_news():
     now=utcnow(); cutoff=now-timedelta(minutes=NEWS_LOOKBACK_MINUTES); out=[]
-    general=api_get("/news",{"category":"general"})
-    general_count=0; matched_count=0
-    for row in general if isinstance(general,list) else []:
-        title=clean(row.get("headline")); ts=parse_time(row.get("datetime"))
-        if not title or not ts or ts < cutoff: continue
-        general_count += 1
-        related=clean(row.get("related"))
-        if headline_matches(title,related):
-            matched_count += 1
-            out.append(News(fingerprint("news",title,row.get("url")),title,clean(row.get("url")),clean(row.get("source")) or "Finnhub",ts,related))
-    LOG.info("Finnhub general news: %s recent, %s NAS100/macro matches",general_count,matched_count)
+    r=requests.get(NEWS_RSS_URL,headers={"User-Agent":"MarketAlertBot/1.0"},timeout=20)
+    r.raise_for_status()
+    root=ET.fromstring(r.content)
+    recent=0; matched=0
+    for item in root.findall(".//item"):
+        title=clean(item.findtext("title"))
+        link=clean(item.findtext("link"))
+        pub=clean(item.findtext("pubDate"))
+        if not title or not link or not pub: continue
+        try: ts=parsedate_to_datetime(pub)
+        except (TypeError,ValueError): continue
+        if ts.tzinfo is None: ts=ts.replace(tzinfo=timezone.utc)
+        if ts < cutoff: continue
+        recent += 1
+        if headline_matches(title):
+            matched += 1
+            source=clean(item.findtext("source")) or "Google News"
+            out.append(News(fingerprint("news",title,link),title,link,source,ts,""))
+    LOG.info("Google News RSS: %s recent, %s NAS100/macro matches",recent,matched)
+    return out
 
-    cursor=int(STATE.get("news_cursor",0) or 0)
-    symbol=sorted(NAS100_TICKERS)[cursor % len(NAS100_TICKERS)]
-    STATE["news_cursor"]=(cursor+1) % len(NAS100_TICKERS)
+def finnhub_news():
     try:
-        rows=api_get("/company-news",{"symbol":symbol,"from":cutoff.date().isoformat(),"to":now.date().isoformat()})
-        company_count=0
-        for row in rows if isinstance(rows,list) else []:
+        now=utcnow(); cutoff=now-timedelta(minutes=NEWS_LOOKBACK_MINUTES); out=[]
+        general=api_get("/news",{"category":"general"})
+        for row in general if isinstance(general,list) else []:
             title=clean(row.get("headline")); ts=parse_time(row.get("datetime"))
-            if title and ts and ts >= cutoff:
-                company_count += 1
-                out.append(News(fingerprint("news",title,row.get("url")),title,clean(row.get("url")),clean(row.get("source")) or "Finnhub",ts,symbol))
-        LOG.info("Finnhub company news: %s=%s recent",symbol,company_count)
+            if not title or not ts or ts < cutoff: continue
+            related=clean(row.get("related"))
+            if headline_matches(title,related):
+                out.append(News(fingerprint("news",title,row.get("url")),title,clean(row.get("url")),clean(row.get("source")) or "Finnhub",ts,related))
+        LOG.info("Finnhub fallback: %s candidate(s)",len(out))
+        return out
     except Exception as exc:
-        LOG.warning("Company news failed for %s: %s",symbol,exc)
-    return sorted({n.uid:n for n in out}.values(),key=lambda n:n.timestamp)
+        LOG.warning("Finnhub news fallback failed: %s",exc)
+        return []
+
+def collect_news():
+    try:
+        items=rss_news()
+        if items:
+            return sorted({n.uid:n for n in items}.values(),key=lambda n:n.timestamp)
+        LOG.warning("Google News RSS returned no matching stories; trying Finnhub fallback")
+    except Exception as exc:
+        LOG.warning("Google News RSS failed: %s",exc)
+    return sorted({n.uid:n for n in finnhub_news()}.values(),key=lambda n:n.timestamp)
 
 def process_news():
-    items=finnhub_news(); sent=0
+    items=collect_news(); sent=0
     for item in items:
         if item.uid in STATE["news"]: continue
         text=(f"MARKET-MOVING HEADLINE\n\n{item.headline}\n"
