@@ -3,7 +3,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-import requests\nfrom http.server import BaseHTTPRequestHandler, HTTPServer\nfrom threading import Thread
+import requests
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 
 LOG = logging.getLogger("market-alerts")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s | %(levelname)s | %(message)s")
@@ -17,6 +19,8 @@ NEWS_LOOKBACK_MINUTES = max(5, int(os.getenv("NEWS_LOOKBACK_MINUTES", "20")))
 STATE_FILE = Path(os.getenv("STATE_FILE", "data/state.json"))
 FOREX_FACTORY_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 FINNHUB_BASE = "https://finnhub.io/api/v1"
+TRADINGVIEW_WEBHOOK_SECRET = os.getenv("TRADINGVIEW_WEBHOOK_SECRET", "").strip()
+TRADINGVIEW_STALE_SECONDS = max(120, int(os.getenv("TRADINGVIEW_STALE_SECONDS", "180")))
 
 NAS100_TICKERS = {"NVDA","AAPL","MSFT","AMZN","META","GOOGL","GOOG","TSLA","AVGO","NFLX","COST","AMD","ADBE","PEP","CSCO","INTC"}
 KEYWORDS = {"fed","federal reserve","fomc","powell","interest rate","rate decision","rate cut","rate hike","cpi","inflation","ppi","nfp","nonfarm payroll","non-farm payroll","jobs report","unemployment","gdp","pce","retail sales","ism","pmi","jobless claims","treasury","yield","yields","10-year","tariff","tariffs","sanction","sanctions","nasdaq","nas100","semiconductor","chip restriction","export controls","ai"}
@@ -69,10 +73,11 @@ def load_state():
 
 def save_state(state):
     STATE_FILE.parent.mkdir(parents=True,exist_ok=True)
-    for key in ("pre_alerted","released","news"): state[key]=list(dict.fromkeys(state.get(key,[])))[-5000:]
+    for key in ("pre_alerted","released","news","trend_live"): state[key]=list(dict.fromkeys(state.get(key,[])))[-5000:]
     tmp=STATE_FILE.with_suffix(".tmp"); tmp.write_text(json.dumps(state,indent=2)); tmp.replace(STATE_FILE)
 
 STATE=load_state()
+STATE.setdefault("trend_live", [])
 
 def api_get(path, params):
     if not FINNHUB_KEY: raise RuntimeError("FINNHUB_API_KEY is missing")
@@ -124,13 +129,25 @@ def pre_alert(event,now):
     if event.actual: return
     delta=(event.time-now).total_seconds()
     if PRE_ALERT_MINUTES*60-45 <= delta <= PRE_ALERT_MINUTES*60+45:
-        text=f"⏰ USD HIGH-IMPACT EVENT IN {PRE_ALERT_MINUTES} MIN\n\n{event.title}\nTime: {event.time.strftime('%H:%M UTC')}\nForecast: {event.forecast or 'n/a'}\nPrevious: {event.previous or 'n/a'}\nSource: {event.source}"
+        text=f"⏰ USD HIGH-IMPACT EVENT IN {PRE_ALERT_MINUTES} MIN
+
+{event.title}
+Time: {event.time.strftime('%H:%M UTC')}
+Forecast: {event.forecast or 'n/a'}
+Previous: {event.previous or 'n/a'}
+Source: {event.source}"
         if send_once("pre_alerted",event_key(event,"pre"),text): LOG.info("Pre-alert sent: %s",event.title)
 
 def release_alert(event):
     if not event.actual: return
     uid=event_key(event,"release")+":"+fingerprint(event.actual)
-    text=f"🚨 USD HIGH-IMPACT RELEASE\n\n{event.title}\nActual: {event.actual}\nForecast: {event.forecast or 'n/a'}\nPrevious: {event.previous or 'n/a'}\nSource: {event.source}"
+    text=f"🚨 USD HIGH-IMPACT RELEASE
+
+{event.title}
+Actual: {event.actual}
+Forecast: {event.forecast or 'n/a'}
+Previous: {event.previous or 'n/a'}
+Source: {event.source}"
     if send_once("released",uid,text): LOG.info("Release alert sent: %s = %s",event.title,event.actual)
 
 def headline_matches(headline,symbol=""):
@@ -154,41 +171,85 @@ def finnhub_news():
     return sorted({n.uid:n for n in out}.values(),key=lambda n:n.timestamp)
 
 def classify_trend(closes):
-    if len(closes) < 8: return "UNKNOWN", 0.0
-    n=min(len(closes),TREND_LOOKBACK_BARS); y=closes[-n:]
+    if len(closes) < 8:
+        return "UNKNOWN", 0.0
+    n=min(len(closes), TREND_LOOKBACK_BARS); y=closes[-n:]
     xbar=(n-1)/2; ybar=sum(y)/n; den=sum((i-xbar)**2 for i in range(n))
     slope=sum((i-xbar)*(v-ybar) for i,v in enumerate(y))/den if den else 0
     move=(slope*(n-1)/y[0])*100 if y[0] else 0
     return ("UP" if move>0.15 else "DOWN" if move<-0.15 else "FLAT"),move
 
-def trend_report():
-    end=int(time.time()); rows=[]
-    for label,mins in [("1H",60),("2H",120),("3H",180),("4H",240)]:
-        start=end-mins*60
-        data=api_get("/stock/candle",{"symbol":TREND_SYMBOL,"resolution":"60","from":start,"to":end})
-        closes=data.get("c",[]) if isinstance(data,dict) and data.get("s")=="ok" else []
-        trend,move=classify_trend(closes); rows.append((label,trend,move))
-    daily_data=api_get("/stock/candle",{"symbol":TREND_SYMBOL,"resolution":"D","from":end-86400*30,"to":end})
-    daily=daily_data.get("c",[]) if isinstance(daily_data,dict) and daily_data.get("s")=="ok" else []
-    dtrend,dmove=classify_trend(daily)
-    dirs=[x[1] for x in rows if x[1] in ("UP","DOWN")]+([dtrend] if dtrend in ("UP","DOWN") else [])
-    overall="UP" if dirs.count("UP")>dirs.count("DOWN") else "DOWN" if dirs.count("DOWN")>dirs.count("UP") else "MIXED"
-    icon={"UP":"🟢","DOWN":"🔴","FLAT":"🟡","UNKNOWN":"⚪"}
-    lines=[f"📊 {TREND_SYMBOL} MARKET TREND",f"Overall: {icon.get(overall,'⚪')} {overall}",f"Daily: {icon[dtrend]} {dtrend}"]
-    for label,tr,move in rows: lines.append(f"{label}: {icon[tr]} {tr} ({move:+.2f}%)" if tr!="UNKNOWN" else f"{label}: ⚪ UNKNOWN")
-    return "\n".join(lines)
+TV_BARS = []
 
-def process_trend():
+def add_tv_bar(payload):
+    global TV_BARS
+    bar = {
+        "ts": float(payload.get("timestamp") or payload.get("time") or time.time()),
+        "open": float(payload["open"]),
+        "high": float(payload["high"]),
+        "low": float(payload["low"]),
+        "close": float(payload["close"]),
+    }
+    TV_BARS.append(bar)
+    cutoff=bar["ts"]-86400*3
+    TV_BARS=[b for b in TV_BARS if b["ts"]>=cutoff][-5000:]
+    return bar
+
+def tv_trend_report():
     now=time.time()
-    last=STATE.get("trend_report_at",0)
-    if now-last < TREND_REPORT_MINUTES*60: return
-    send_once("trend",str(int(now//(TREND_REPORT_MINUTES*60))),trend_report())
-    STATE["trend_report_at"]=now; save_state(STATE)
+    fresh=[b for b in TV_BARS if b["ts"]>=now-86400]
+    if not fresh:
+        return "📊 NAS100.pro MARKET TREND\\nStatus: WAITING FOR TRADINGVIEW DATA"
+    closes=[b["close"] for b in fresh]
+    rows=[]
+    for label,seconds in [("1H",3600),("2H",7200),("3H",10800),("4H",14400)]:
+        subset=[b["close"] for b in fresh if b["ts"]>=now-seconds]
+        tr,move=classify_trend(subset); rows.append((label,tr,move))
+    daily=[b["close"] for b in fresh if b["ts"]>=now-86400]
+    dtrend,dmove=classify_trend(daily)
+    dirs=[x[1] for x in rows+[("Daily",dtrend,dmove)] if x[1] in ("UP","DOWN")]
+    overall="UP" if dirs.count("UP")>dirs.count("DOWN") else "DOWN" if dirs.count("DOWN")>dirs.count("UP") else "MIXED"
+    age=max(0,int(now-fresh[-1]["ts"]))
+    lines=[f"📊 NAS100.pro MARKET TREND",f"Overall: {overall}",f"Daily: {dtrend}",f"1H: {rows[0][1]}",f"2H: {rows[1][1]}",f"3H: {rows[2][1]}",f"4H: {rows[3][1]}",f"TradingView data age: {age}s"]
+    return "\\n".join(lines)
+
+class TradingViewHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path != "/tradingview":
+            self.send_response(404); self.end_headers(); return
+        if TRADINGVIEW_WEBHOOK_SECRET and self.headers.get("X-TradingView-Secret","") != TRADINGVIEW_WEBHOOK_SECRET:
+            self.send_response(401); self.end_headers(); return
+        try:
+            length=int(self.headers.get("Content-Length","0"))
+            payload=json.loads(self.rfile.read(length))
+            add_tv_bar(payload)
+            report=tv_trend_report()
+            bucket="trend_live"
+            uid=f"{int(time.time()//60)}:{report}"
+            if send_once(bucket,uid,report):
+                LOG.info("NAS100.pro TradingView trend sent")
+            self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+        except Exception as exc:
+            LOG.exception("TradingView webhook failed: %s",exc)
+            self.send_response(400); self.end_headers()
+    def log_message(self, format, *args): return
+
+def run_http():
+    port=int(os.getenv("PORT","10000"))
+    server=HTTPServer(("0.0.0.0",port),TradingViewHandler)
+    Thread(target=server.serve_forever,daemon=True).start()
+    LOG.info("TradingView webhook listening on port %s",port)
+
 
 def process_news():
     for item in finnhub_news():
         if item.uid in STATE["news"]: continue
-        text=f"📰 MARKET-MOVING HEADLINE\n\n{item.headline}\n"+(f"Ticker: {item.symbol}\n" if item.symbol else "")+f"Source: {item.source}\n{item.url}"
+        text=f"📰 MARKET-MOVING HEADLINE
+
+{item.headline}
+"+(f"Ticker: {item.symbol}
+" if item.symbol else "")+f"Source: {item.source}
+{item.url}"
         send_once("news",item.uid,text)
 
 def validate():
@@ -196,7 +257,7 @@ def validate():
     if missing: raise RuntimeError("Missing environment variables: "+", ".join(missing))
 
 def run():
-    validate(); LOG.info("Market alert bot started. Poll=%ss",POLL_SECONDS)
+    validate(); run_http(); LOG.info("Market alert bot started. Poll=%ss",POLL_SECONDS)
     while True:
         started=time.monotonic(); now=utcnow()
         try:
@@ -204,7 +265,7 @@ def run():
             for event in events:
                 if now-timedelta(minutes=1) <= event.time <= now+timedelta(hours=CALENDAR_LOOKAHEAD_HOURS):
                     pre_alert(event,now); release_alert(event)
-            process_news()\n            process_trend()
+            process_news()
         except Exception: LOG.exception("Polling cycle failed; retrying next cycle")
         time.sleep(max(5,POLL_SECONDS-(time.monotonic()-started)))
 
