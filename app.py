@@ -194,42 +194,78 @@ def tv_trend_report():
     now=time.time()
     fresh=[b for b in TV_BARS if b["ts"]>=now-86400]
     if not fresh:
-        return "📊 NAS100.pro MARKET TREND\
-Status: WAITING FOR TRADINGVIEW DATA"
-    closes=[b["close"] for b in fresh]
+        return "📊 NAS100.pro MARKET TREND\nStatus: WAITING FOR TRADINGVIEW DATA"
     rows=[]
     for label,seconds in [("1H",3600),("2H",7200),("3H",10800),("4H",14400)]:
         subset=[b["close"] for b in fresh if b["ts"]>=now-seconds]
-        tr,move=classify_trend(subset); rows.append((label,tr,move))
+        tr,move=classify_trend(subset)
+        rows.append((label,tr,move))
     daily=[b["close"] for b in fresh if b["ts"]>=now-86400]
     dtrend,dmove=classify_trend(daily)
     dirs=[x[1] for x in rows+[("Daily",dtrend,dmove)] if x[1] in ("UP","DOWN")]
     overall="UP" if dirs.count("UP")>dirs.count("DOWN") else "DOWN" if dirs.count("DOWN")>dirs.count("UP") else "MIXED"
     age=max(0,int(now-fresh[-1]["ts"]))
-    lines=[f"📊 NAS100.pro MARKET TREND",f"Overall: {overall}",f"Daily: {dtrend}",f"1H: {rows[0][1]}",f"2H: {rows[1][1]}",f"3H: {rows[2][1]}",f"4H: {rows[3][1]}",f"TradingView data age: {age}s"]
-    return "\
-".join(lines)
+    lines=[
+        "📊 NAS100.pro MARKET TREND",
+        f"Overall: {overall}",
+        f"Daily: {dtrend}",
+        f"1H: {rows[0][1]}",
+        f"2H: {rows[1][1]}",
+        f"3H: {rows[2][1]}",
+        f"4H: {rows[3][1]}",
+        f"TradingView data age: {age}s",
+    ]
+    return "\n".join(lines)
+
+def process_tradingview(payload):
+    try:
+        add_tv_bar(payload)
+        report=tv_trend_report()
+        uid=f"{int(time.time()//60)}:{report}"
+        if send_once("trend_live",uid,report):
+            LOG.info("NAS100.pro TradingView trend sent")
+    except Exception as exc:
+        LOG.exception("TradingView webhook processing failed: %s",exc)
 
 class TradingViewHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.split("?",1)[0] == "/health":
+            body=b"ok"
+            self.send_response(200)
+            self.send_header("Content-Type","text/plain")
+            self.send_header("Content-Length",str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_response(404)
+        self.end_headers()
+
     def do_POST(self):
         if not self.path.startswith("/tradingview/"):
-            self.send_response(404); self.end_headers(); return
+            self.send_response(404)
+            self.end_headers()
+            return
         path_secret=self.path.split("/tradingview/",1)[1].split("?",1)[0]
-        if TRADINGVIEW_WEBHOOK_SECRET and path_secret != TRADINGVIEW_WEBHOOK_SECRET:
-            self.send_response(401); self.end_headers(); return
+        if not TRADINGVIEW_WEBHOOK_SECRET or path_secret != TRADINGVIEW_WEBHOOK_SECRET:
+            self.send_response(401)
+            self.end_headers()
+            return
         try:
             length=int(self.headers.get("Content-Length","0"))
             payload=json.loads(self.rfile.read(length))
-            add_tv_bar(payload)
-            report=tv_trend_report()
-            bucket="trend_live"
-            uid=f"{int(time.time()//60)}:{report}"
-            if send_once(bucket,uid,report):
-                LOG.info("NAS100.pro TradingView trend sent")
-            self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+            if not {"open","high","low","close"}.issubset(payload):
+                raise ValueError("TradingView payload missing OHLC fields")
+            Thread(target=process_tradingview,args=(payload,),daemon=True).start()
+            body=b"ok"
+            self.send_response(200)
+            self.send_header("Content-Type","text/plain")
+            self.send_header("Content-Length",str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         except Exception as exc:
-            LOG.exception("TradingView webhook failed: %s",exc)
-            self.send_response(400); self.end_headers()
+            LOG.exception("TradingView webhook rejected: %s",exc)
+            self.send_response(400)
+            self.end_headers()
     def log_message(self, format, *args): return
 
 def run_http():
