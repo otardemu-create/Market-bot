@@ -34,6 +34,7 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_NEWS }}
           POLL_SECONDS: "60"
+          RUN_ONCE: "1"
           CALENDAR_MINUTES: "180"
           MIN_IMPACT: "medium"
         run: |

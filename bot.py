@@ -61,6 +61,7 @@ POLL_SECONDS = int(os.getenv("POLL_SECONDS", "60"))
 CALENDAR_MINUTES = int(os.getenv("CALENDAR_MINUTES", "180"))
 
 MIN_IMPACT = os.getenv("MIN_IMPACT", "medium").lower()
+RUN_ONCE = os.getenv("RUN_ONCE", "0").lower() in {"1", "true", "yes"}
 
 SEEN_FILE = "market_bot_seen.json"
 
@@ -1125,6 +1126,13 @@ def run():
             "News processing crashed: %s",
             e,
         )
+
+    # GitHub Actions runs this bot as a scheduled job. In that mode,
+    # finish after one complete cycle so the workflow can persist state.
+    if RUN_ONCE:
+        save_seen(SEEN)
+        log.info("RUN_ONCE enabled. Cycle complete; exiting.")
+        return
 
     # Continuous operation.
     while True:
