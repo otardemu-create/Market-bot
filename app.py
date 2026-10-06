@@ -24,43 +24,58 @@ TREND_LOOKBACK_BARS = max(8, int(os.getenv("TREND_LOOKBACK_BARS", "20")))
 STATE_FILE = Path(os.getenv("STATE_FILE", "data/state.json"))
 FINANCE_CALENDAR_URL = "https://www.financecalendar.com/wp-json/fc/v1/calendar"
 FINNHUB_BASE = "https://finnhub.io/api/v1"
-NEWS_RSS_QUERY = '("Federal Reserve" OR FOMC OR Powell OR "rate cut" OR "rate hike" OR CPI OR PPI OR "nonfarm payroll" OR unemployment OR GDP OR PCE OR "retail sales" OR tariffs OR sanctions OR "export controls" OR "debt ceiling" OR Nvidia OR Apple OR Microsoft OR Amazon OR Meta OR Google OR Tesla OR Broadcom OR AMD) when:2h'
+NEWS_RSS_QUERY = '("Federal Reserve" OR FOMC OR Powell OR "rate cut" OR "rate hike" OR CPI OR PPI OR "nonfarm payroll" OR unemployment OR GDP OR PCE OR "retail sales" OR "Treasury yields" OR "10-year yield" OR "US dollar" OR DXY OR "dollar index" OR "Nasdaq 100" OR "Nasdaq futures" OR "S&P 500" OR "Brent crude" OR OPEC OR tariffs OR "trade war" OR "export controls" OR Nvidia OR Apple OR Microsoft OR Amazon OR Meta OR Google OR Tesla OR Broadcom OR AMD) when:2h'
 NEWS_RSS_URL = "https://news.google.com/rss/search?q=" + urllib.parse.quote_plus(NEWS_RSS_QUERY) + "&hl=en-US&gl=US&ceid=US:en"
 TRADINGVIEW_WEBHOOK_SECRET = os.getenv("TRADINGVIEW_WEBHOOK_SECRET", "").strip()
 TRADINGVIEW_STALE_SECONDS = max(120, int(os.getenv("TRADINGVIEW_STALE_SECONDS", "180")))
 
 NAS100_TICKERS = {"NVDA","AAPL","MSFT","AMZN","META","GOOGL","GOOG","TSLA","AVGO","NFLX","COST","AMD","ADBE","PEP","CSCO","INTC"}
-# Broad company/universe terms are intentionally NOT enough to trigger an alert.
-# A headline must contain a concrete catalyst or a major market-wide move.
-MACRO_IMPACT_TERMS = {
-    "fomc", "federal reserve", "fed decision", "fed rate", "rate cut", "rate hike",
-    "interest rate decision", "cpi", "consumer price index", "ppi", "producer price",
-    "nonfarm payroll", "non-farm payroll", "jobs report", "unemployment rate",
-    "initial jobless claims", "gdp", "gross domestic product", "pce",
-    "retail sales", "ism manufacturing", "ism services", "tariff", "tariffs",
-    "sanctions", "export controls", "debt ceiling", "government shutdown"
+# NEWS TRACKER SCOPE:
+# Only alert when a story has a credible direct path to USD and/or NAS100.
+# Generic global news, politics, commodities, crypto, and company chatter are excluded.
+US_MACRO_TERMS = {
+    "federal reserve","fed","fomc","fed minutes","fed decision","fed rate",
+    "interest rate","rate cut","rate hike","rate decision","monetary policy",
+    "cpi","consumer price index","core cpi","ppi","producer price",
+    "nonfarm payroll","non-farm payroll","jobs report","unemployment rate",
+    "jobless claims","adp employment","wage growth","average hourly earnings",
+    "gdp","gross domestic product","pce","personal consumption expenditures",
+    "retail sales","ism manufacturing","ism services","pmi",
+    "consumer confidence","consumer sentiment","inflation expectations",
+    "treasury yield","treasury yields","10-year yield","2-year yield",
+    "bond yields","us dollar","dollar index","dxy","usd"
 }
-COMPANY_IMPACT_TERMS = {
-    "earnings", "quarterly results", "guidance", "outlook", "profit warning",
-    "revenue warning", "acquisition", "merger", "takeover", "buyout",
-    "bankruptcy", "chapter 11", "sec investigation", "sec charges",
-    "antitrust", "lawsuit", "investigation", "recall", "accounting fraud",
-    "layoffs", "job cuts", "ceo resigns", "ceo steps down", "ipo",
-    "downgrade", "upgrade", "price target"
+US_FISCAL_TRADE_TERMS = {
+    "us tariff","u.s. tariff","us tariffs","u.s. tariffs",
+    "trade war","trade agreement","trade deal","export controls",
+    "us sanctions","u.s. sanctions","debt ceiling","government shutdown"
+}
+ENERGY_INFLATION_TERMS = {
+    "oil price","oil prices","crude oil","brent crude","wti crude",
+    "oil supply","oil production","opec","opec+","energy prices",
+    "gasoline prices","natural gas"
 }
 MARKET_MOVE_TERMS = {
-    "stock market crashes", "market crashes", "market plunge", "market plunges",
-    "stocks plunge", "stocks plummet", "stocks surge", "stocks rally",
-    "nasdaq plunges", "nasdaq surges", "nasdaq selloff", "nasdaq rally",
-    "s&p 500 plunges", "s&p 500 surges", "s&p 500 selloff",
-    "futures plunge", "futures surge", "global selloff", "risk-off", "risk on"
+    "nasdaq plunge","nasdaq plunges","nasdaq selloff","nasdaq surge",
+    "nasdaq surges","nasdaq rally","nasdaq falls","nasdaq rises",
+    "nasdaq 100","nasdaq-100","s&p 500 plunge","s&p 500 selloff",
+    "s&p 500 surge","s&p 500 rally","us stocks plunge","us stocks surge",
+    "us stocks selloff","stock futures plunge","stock futures surge",
+    "nasdaq futures","nasdaq 100 futures","risk-off","risk on"
+}
+COMPANY_CATALYST_TERMS = {
+    "earnings","quarterly results","guidance","outlook","profit warning",
+    "revenue warning","acquisition","merger","takeover","buyout",
+    "bankruptcy","chapter 11","sec investigation","sec charges",
+    "antitrust","major lawsuit","investigation","accounting fraud",
+    "layoffs","job cuts","ceo resigns","ceo steps down","ipo",
+    "downgrade","upgrade","price target","product launch","data center"
 }
 NASDAQ_COMPANIES = {
-    "nvidia": "NVDA", "apple": "AAPL", "microsoft": "MSFT", "amazon": "AMZN",
-    "meta": "META", "google": "GOOGL", "alphabet": "GOOGL", "tesla": "TSLA",
-    "broadcom": "AVGO", "amd": "AMD", "netflix": "NFLX", "costco": "COST",
-    "adobe": "ADBE", "pepsico": "PEP", "cisco": "CSCO", "intel": "INTC"
+    "nvidia","apple","microsoft","amazon","meta","google","alphabet","tesla",
+    "broadcom","amd","netflix","costco","adobe","pepsico","cisco","intel"
 }
+NASDAQ_SYMBOLS = {"NVDA","AAPL","MSFT","AMZN","META","GOOGL","GOOG","TSLA","AVGO","AMD","NFLX","COST","ADBE","PEP","CSCO","INTC"}
 
 @dataclass(frozen=True)
 class Event:
@@ -177,19 +192,33 @@ def release_alert(event):
     if send_once("released",uid,text): LOG.info("Release alert sent: %s = %s",event.title,event.actual)
 
 def headline_matches(headline,symbol=""):
-    """Strict high-impact gate. Generic market chatter must not alert."""
-    hay = clean(f"{headline} {symbol}").lower()
+    """Allow only high-impact USD/NAS100/US-financial-market stories."""
+    text = clean(f"{headline} {symbol}")
+    hay = text.lower()
 
-    if any(term in hay for term in MACRO_IMPACT_TERMS):
+    # Direct US macro / USD catalysts.
+    if any(term in hay for term in US_MACRO_TERMS):
         return True
 
+    # US trade/fiscal stories only when explicitly tied to the United States.
+    if any(term in hay for term in US_FISCAL_TRADE_TERMS):
+        return True
+
+    # Energy matters only because it can feed US inflation/rates and USD/NAS100.
+    if any(term in hay for term in ENERGY_INFLATION_TERMS):
+        return True
+
+    # Broad market moves are useful only when the US/Nasdaq market is explicit.
     if any(term in hay for term in MARKET_MOVE_TERMS):
         return True
 
+    # Individual Nasdaq names require both the company and a concrete catalyst.
     company_hit = any(name in hay for name in NASDAQ_COMPANIES)
-    catalyst_hit = any(term in hay for term in COMPANY_IMPACT_TERMS)
-    ticker_hit = symbol.upper() in NAS100_TICKERS if symbol else False
-    return (company_hit or ticker_hit) and catalyst_hit
+    symbol_hit = symbol.upper() in NASDAQ_SYMBOLS if symbol else any(
+        re.search(rf"\b{re.escape(t)}\b", text, re.I) for t in NASDAQ_SYMBOLS
+    )
+    catalyst_hit = any(term in hay for term in COMPANY_CATALYST_TERMS)
+    return (company_hit or symbol_hit) and catalyst_hit
 
 def rss_news():
     now=utcnow(); cutoff=now-timedelta(minutes=NEWS_LOOKBACK_MINUTES); out=[]
