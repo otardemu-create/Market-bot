@@ -129,9 +129,9 @@ def pre_alert(event,now):
     if event.actual: return
     delta=(event.time-now).total_seconds()
     if PRE_ALERT_MINUTES*60-45 <= delta <= PRE_ALERT_MINUTES*60+45:
-        text=(f"USD HIGH-IMPACT EVENT IN {PRE_ALERT_MINUTES} MIN\\n\\n"
-              f"{event.title}\\nTime: {event.time.strftime('%H:%M UTC')}\\n"
-              f"Forecast: {event.forecast or 'n/a'}\\nPrevious: {event.previous or 'n/a'}\\n"
+        text=(f"USD HIGH-IMPACT EVENT IN {PRE_ALERT_MINUTES} MIN\n\n"
+              f"{event.title}\nTime: {event.time.strftime('%H:%M UTC')}\n"
+              f"Forecast: {event.forecast or 'n/a'}\nPrevious: {event.previous or 'n/a'}\n"
               f"Source: {event.source}")
         if send_once("pre_alerted",event_key(event,"pre"),text): LOG.info("Pre-alert sent: %s",event.title)
 
@@ -139,8 +139,8 @@ def pre_alert(event,now):
 def release_alert(event):
     if not event.actual: return
     uid=event_key(event,"release")+":"+fingerprint(event.actual)
-    text=(f"USD HIGH-IMPACT RELEASE\\n\\n{event.title}\\nActual: {event.actual}\\n"
-          f"Forecast: {event.forecast or 'n/a'}\\nPrevious: {event.previous or 'n/a'}\\n"
+    text=(f"USD HIGH-IMPACT RELEASE\n\n{event.title}\nActual: {event.actual}\n"
+          f"Forecast: {event.forecast or 'n/a'}\nPrevious: {event.previous or 'n/a'}\n"
           f"Source: {event.source}")
     if send_once("released",uid,text): LOG.info("Release alert sent: %s = %s",event.title,event.actual)
 
@@ -251,7 +251,7 @@ def process_news():
         send_once("news",item.uid,text)
 
 def validate():
-    missing=[name for name,value in {"FINNHUB_API_KEY":FINNHUB_KEY,"DISCORD_WEBHOOK_URL":DISCORD_WEBHOOK_URL}.items() if not value]
+    missing=[name for name,value in {"FINNHUB_API_KEY":FINNHUB_KEY,"DISCORD_WEBHOOK_URL":DISCORD_WEBHOOK_URL,"TRADINGVIEW_WEBHOOK_SECRET":TRADINGVIEW_WEBHOOK_SECRET}.items() if not value]
     if missing: raise RuntimeError("Missing environment variables: "+", ".join(missing))
 
 def run():
