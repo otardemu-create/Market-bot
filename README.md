@@ -1,6 +1,6 @@
 # USD + NAS100 Market Alert Bot
 
-Always-on Python service for Telegram alerts around high-impact USD macro events and market-moving NAS100 headlines.
+Always-on Python service for Discord alerts around high-impact USD macro events and market-moving NAS100 headlines.
 
 ## Alerts
 
@@ -20,7 +20,7 @@ Finnhub requires an API key and its economic-data product is paid. Check the cur
 
 ## Setup
 
-1. Create a Telegram bot with BotFather.
+1. Create a Discord bot with BotFather.
 2. Add the bot to the target chat/channel and get the chat ID.
 3. Create a Finnhub API key.
 4. Copy .env.example to .env and set the real values.
@@ -41,9 +41,9 @@ Run this on an always-on VPS or cloud VM. Do not use GitHub Actions for the poll
 
 The state file is persisted under data/state.json. Alert fingerprints prevent duplicate calendar and news messages across restarts.
 
-## Telegram
+## Discord
 
-The service uses Telegram's Bot API sendMessage endpoint.
+The service uses Discord's Bot API sendMessage endpoint.
 
 ## Latency
 
