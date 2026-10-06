@@ -9,8 +9,7 @@ LOG = logging.getLogger("market-alerts")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s | %(levelname)s | %(message)s")
 
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 POLL_SECONDS = max(15, int(os.getenv("POLL_SECONDS", "30")))
 CALENDAR_LOOKAHEAD_HOURS = max(6, int(os.getenv("CALENDAR_LOOKAHEAD_HOURS", "48")))
 PRE_ALERT_MINUTES = int(os.getenv("PRE_ALERT_MINUTES", "10"))
@@ -80,14 +79,14 @@ def api_get(path, params):
     params=dict(params); params["token"]=FINNHUB_KEY
     r=requests.get(f"{FINNHUB_BASE}{path}",params=params,timeout=20); r.raise_for_status(); return r.json()
 
-def telegram_send(text):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: raise RuntimeError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required")
-    r=requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",json={"chat_id":TELEGRAM_CHAT_ID,"text":text,"disable_web_page_preview":False},timeout=20)
+def discord_send(text):
+    if not DISCORD_WEBHOOK_URL: raise RuntimeError("DISCORD_WEBHOOK_URL is required")
+    r=requests.post(DISCORD_WEBHOOK_URL,json={"content":text[:2000],"allowed_mentions":{"parse":[]}},timeout=20)
     r.raise_for_status()
 
 def send_once(bucket,uid,text):
     if uid in STATE[bucket]: return False
-    telegram_send(text); STATE[bucket].append(uid); save_state(STATE); return True
+    discord_send(text); STATE[bucket].append(uid); save_state(STATE); return True
 
 def normalize_event(raw,source):
     currency=clean(raw.get("currency") or raw.get("country")).upper()
@@ -161,7 +160,7 @@ def process_news():
         send_once("news",item.uid,text)
 
 def validate():
-    missing=[name for name,value in {"FINNHUB_API_KEY":FINNHUB_KEY,"TELEGRAM_BOT_TOKEN":TELEGRAM_TOKEN,"TELEGRAM_CHAT_ID":TELEGRAM_CHAT_ID}.items() if not value]
+    missing=[name for name,value in {"FINNHUB_API_KEY":FINNHUB_KEY,"DISCORD_WEBHOOK_URL":DISCORD_WEBHOOK_URL}.items() if not value]
     if missing: raise RuntimeError("Missing environment variables: "+", ".join(missing))
 
 def run():
