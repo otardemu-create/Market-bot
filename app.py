@@ -104,7 +104,11 @@ def normalize_event(raw,source):
 
 def finnhub_calendar():
     today=utcnow().date(); end=(utcnow()+timedelta(hours=CALENDAR_LOOKAHEAD_HOURS)).date()
-    data=api_get("/calendar/economic",{"from":today.isoformat(),"to":end.isoformat()})
+    try:
+        data=api_get("/calendar/economic",{"from":today.isoformat(),"to":end.isoformat()})
+    except requests.HTTPError as exc:
+        LOG.warning("Finnhub economic calendar unavailable (%s); using Forex Factory calendar",exc)
+        return []
     rows=data.get("economicCalendar",data if isinstance(data,list) else [])
     return [e for row in rows if (e:=normalize_event(row,"Finnhub"))]
 
