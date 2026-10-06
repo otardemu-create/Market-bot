@@ -279,11 +279,50 @@ def collect_news():
         LOG.warning("Google News RSS failed: %s",exc)
     return sorted({n.uid:n for n in finnhub_news()}.values(),key=lambda n:n.timestamp)
 
+def news_market_view(headline):
+    """Give a transparent directional read from the headline. This is an inference, not a guarantee."""
+    h=headline.lower()
+    bullish=[]; bearish=[]
+    if any(x in h for x in ("rate cut","rate cuts","dovish","lower yields","yields fall","yield falls","yield drop","yield drops")):
+        bullish.append("lower-rate/yield pressure")
+    if any(x in h for x in ("rate hike","rate hikes","hawkish","higher yields","yields rise","yield rises","yield spike","yield spikes")):
+        bearish.append("higher-rate/yield pressure")
+    if any(x in h for x in ("cpi","inflation","ppi","pce")):
+        if any(x in h for x in ("higher than expected","hotter than expected","above forecast","accelerates","accelerated","surges","rises")):
+            bearish.append("hot inflation")
+        elif any(x in h for x in ("lower than expected","cooler than expected","below forecast","eases","eased","falls","fell")):
+            bullish.append("cooler inflation")
+    if any(x in h for x in ("jobs report","nonfarm payroll","non-farm payroll","employment","jobless claims","unemployment")):
+        if any(x in h for x in ("stronger than expected","above forecast","beat","beats","falls","fell")):
+            bearish.append("stronger labor data can delay cuts")
+        elif any(x in h for x in ("weaker than expected","below forecast","miss","misses","rises","rose")):
+            bullish.append("weaker labor data can support cuts")
+    if any(x in h for x in ("oil","crude","brent","wti")):
+        if any(x in h for x in ("surge","surges","surging","soar","soars","spike","spikes","higher","rises","rose")):
+            bearish.append("higher oil/inflation risk")
+        elif any(x in h for x in ("plunge","plunges","drop","drops","fall","falls","lower","eases","eased")):
+            bullish.append("lower oil/inflation risk")
+    if any(x in h for x in ("nasdaq plunge","nasdaq plunges","nasdaq selloff","nasdaq falls","nasdaq 100 falls","stock futures plunge")):
+        bearish.append("Nasdaq risk-off move")
+    if any(x in h for x in ("nasdaq surge","nasdaq surges","nasdaq rally","nasdaq rises","nasdaq 100 rises","stock futures surge")):
+        bullish.append("Nasdaq risk-on move")
+    if bullish and not bearish:
+        return "NAS100: UP BIAS", "USD: DOWN BIAS", "Because " + "; ".join(bullish[:2])
+    if bearish and not bullish:
+        return "NAS100: DOWN BIAS", "USD: UP BIAS", "Because " + "; ".join(bearish[:2])
+    if bullish and bearish:
+        return "NAS100: MIXED", "USD: MIXED", "Conflicting signals: " + "; ".join((bullish+bearish)[:2])
+    return "NAS100: UNKNOWN", "USD: UNKNOWN", "Headline alone is not enough to assign direction"
+
 def process_news():
     items=collect_news(); sent=0
     for item in items:
         if item.uid in STATE["news"]: continue
-        text=(f"MARKET-MOVING HEADLINE\n\n{item.headline}\n"
+        nas_bias, usd_bias, reason = news_market_view(item.headline)
+        text=(f"MARKET-MOVING NEWS\n\n"
+              f"{item.headline}\n\n"
+              f"{nas_bias}\n{usd_bias}\n"
+              f"WHY: {reason}\n\n"
               + (f"Ticker: {item.symbol}\n" if item.symbol else "")
               + f"Source: {item.source}\n{item.url}")
         if send_once("news",item.uid,text): sent+=1
